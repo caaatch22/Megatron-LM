@@ -27,6 +27,14 @@ except ImportError:
     HAVE_FUSED_LAYER_NORM = False
 
 
+try:
+    from apex.normalization.fused_layer_norm import FusedRMSNormAffineFunction
+
+    HAVE_FUSED_RMS_NORM = True
+except ImportError:
+    HAVE_FUSED_RMS_NORM = False
+
+
 class FusedLayerNorm(torch.nn.Module):
     """Layer Norm, fused into a single CUDA kernel.
 
@@ -167,3 +175,82 @@ class FusedLayerNorm(torch.nn.Module):
                 )
 
         return output
+
+
+
+
+
+class FusedRMSNorm(torch.nn.Module):
+    """RMS Norm, fused into a single CUDA kernel.
+    Args:
+      hidden_size (int): Transformer hidden dimension.
+      eps (float): Epsilon added to denominator, for numerical stability.
+      persist_layer_norm (bool): Use persistent fused layer norm kernel.
+      This kernel supports only a set of hidden sizes. Please
+      check persist_ln_hidden_sizes if your hidden size is supported.
+      
+      zero_centered_gamma : bool, default = 'False'
+        if set to 'True', gamma parameter in RMSNorm is initialized to 0 and
+        the RMSNorm formula changes to
+        .. math::
+            y = \frac{x}{RMS_\varepsilon(x)} * (1 + \gamma)
+      config (TransformerConfig): Transformer config. Include to match custom
+      layer norm interfaces.
+      normalization (str): Normalization type, used for Transformer Engine.
+      Must equal 'LayerNorm' here.
+    """
+
+    def __init__(
+        self,
+        config: TransformerConfig,
+        hidden_size: int,
+        eps = None,
+        persist_layer_norm: bool = False,  # include to match FusedLayerNorm interface
+        zero_centered_gamma: bool = False,
+        normalization: str = "RMSNorm",  # included to match TE interface
+    ):
+        super().__init__()
+
+        self.config = config
+
+        assert (persist_layer_norm == False), f'({persist_layer_norm}) is not supported in RMSLayerNorm'
+
+        self.zero_centered_gamma = self.config.layernorm_zero_centered_gamma
+        assert (
+            self.config.normalization == "RMSNorm"
+        ), f'({self.config.normalization}) is not supported in RMSLayerNorm'
+
+        if isinstance(hidden_size, numbers.Integral):
+            hidden_size = (hidden_size,)
+        self.hidden_size = torch.Size(hidden_size)
+        self.eps = eps
+        # Parameters need to be initialized with torch.empty rather than torch.Tensor for correct device placement with nemo2.
+        self.weight = Parameter(torch.empty(*hidden_size))
+        self.reset_parameters()
+        self.sequence_parallel = self.config.sequence_parallel
+
+        # set sequence parallelism flag on weight parameters
+        setattr(self.weight, 'sequence_parallel', self.sequence_parallel)
+
+    def reset_parameters(self):
+        init.constant_(self.weight, float(not self.zero_centered_gamma))
+
+    def forward(self, input: Tensor) -> Tensor:
+
+        weight = self.weight + 1 if self.zero_centered_gamma else self.weight
+
+        if (
+            'memory_efficient'
+            in inspect.getfullargspec(FusedRMSNormAffineFunction.forward).args
+        ):
+            return FusedRMSNormAffineFunction.apply(
+                input,
+                weight,
+                self.hidden_size,
+                self.eps,
+                self.config.memory_efficient_layer_norm,
+            )
+        else:
+            return FusedRMSNormAffineFunction.apply(
+                input, weight, self.hidden_size, self.eps
+            )

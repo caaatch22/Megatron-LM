@@ -11,6 +11,7 @@ from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
+from megatron.core.transformer.layer_norm import LayerNorm
 
 try:
     from megatron.core.transformer.custom_layers.transformer_engine import (
@@ -25,22 +26,6 @@ try:
     HAVE_TE = True
 except ImportError:
     HAVE_TE = False
-
-try:
-    import apex
-
-    from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
-
-    HAVE_APEX = True
-    LNImpl = FusedLayerNorm
-except ImportError:
-    import warnings
-
-    from megatron.core.transformer.torch_layer_norm import WrappedTorchLayerNorm
-
-    warnings.warn(f'Apex is not installed. Falling back to Torch LayerNorm')
-    LNImpl = WrappedTorchLayerNorm
-
 
 # Use this spec to use lower level Transformer Engine modules (required for fp8 training)
 def get_gpt_layer_with_transformer_engine_spec(
@@ -83,7 +68,7 @@ def get_gpt_layer_local_spec(
     return ModuleSpec(
         module=TransformerLayer,
         submodules=TransformerLayerSubmodules(
-            input_layernorm=LNImpl,
+            input_layernorm=LayerNorm,
             self_attention=ModuleSpec(
                 module=SelfAttention,
                 params={"attn_mask_type": AttnMaskType.causal},
@@ -91,12 +76,12 @@ def get_gpt_layer_local_spec(
                     linear_qkv=ColumnParallelLinear,
                     core_attention=DotProductAttention,
                     linear_proj=RowParallelLinear,
-                    q_layernorm=LNImpl if qk_layernorm else IdentityOp,
-                    k_layernorm=LNImpl if qk_layernorm else IdentityOp,
+                    q_layernorm=LayerNorm if qk_layernorm else IdentityOp,
+                    k_layernorm=LayerNorm if qk_layernorm else IdentityOp,
                 ),
             ),
             self_attn_bda=get_bias_dropout_add,
-            pre_mlp_layernorm=LNImpl,
+            pre_mlp_layernorm=LayerNorm,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
             sharded_state_dict_keys_map={

@@ -12,7 +12,7 @@ from torch import Tensor
 from megatron.core import InferenceParams, parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.dist_checkpointing.utils import replace_prefix_for_sharding
-from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
+from megatron.core.fusions.fused_layer_norm import FusedLayerNorm, FusedRMSNorm
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import MegatronModule
@@ -35,19 +35,27 @@ try:
     )
 
     HAVE_TE = True
-    LayerNormImpl = TENorm
+
 except ImportError:
     HAVE_TE = False
     get_cpu_offload_context = None
+
+
+def _get_layernorm_impl(normalization: str = 'LayerNorm'):
+    if HAVE_TE:
+        return TENorm
     try:
         import apex
 
-        LayerNormImpl = FusedLayerNorm
+        LayerNormImpl = FusedLayerNorm if normalization == 'LayerNorm' else FusedRMSNorm
     except ModuleNotFoundError:
-        from megatron.core.transformer.torch_layer_norm import WrappedTorchLayerNorm
+        from megatron.core.transformer.torch_layer_norm import WrappedTorchLayerNorm, WrappedTorchRMSNorm
 
-        LayerNormImpl = WrappedTorchLayerNorm
+        LayerNormImpl = WrappedTorchLayerNorm if normalization == 'LayerNorm' else WrappedTorchLayerNorm
 
+    return LayerNormImpl
+
+    
 
 def get_num_layers_to_build(config: TransformerConfig) -> int:
 
@@ -106,7 +114,7 @@ def _get_block_submodules(
         elif issubclass(spec.module, BaseTransformerLayer):
             num_layers = get_num_layers_to_build(config)
             return TransformerBlockSubmodules(
-                layer_specs=[spec] * num_layers, layer_norm=LayerNormImpl
+                layer_specs=[spec] * num_layers, layer_norm=_get_layernorm_impl(config.normalization)
             )
         else:
             raise Exception(f"specialize for {spec.module.__name__}.")

@@ -455,6 +455,12 @@ def validate_args(args, defaults={}):
                   'pytorch v1.11 (nvidia pytorch container paired with v1.11). '
                   'Defaulting to no_persist_layer_norm=True')
 
+    if args.normalization == 'RMSNorm' and args.transformer_impl == 'local':
+        args.no_persist_layer_norm = True
+        if args.rank == 0:
+            print('Persistent fused rms norm kernel is not supported with local transformer implementation. '
+                  'Defaulting to no_persist_layer_norm=True')
+
     # Activation recomputing.
     if args.distribute_saved_activations:
         assert args.tensor_model_parallel_size > 1, 'can distribute ' \
